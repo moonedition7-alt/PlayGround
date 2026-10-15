@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>PANDA AI STUDIO — Turn Your Imagination Into AI Videos</title>
+<meta name="description" content="Create stunning videos from text and images using AI. PANDA AI STUDIO text-to-video and image-to-video generator." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐼</text></svg>">
+</head>
+<body>
+<div class="bg-orbs" aria-hidden="true"><span class="orb orb-1"></span><span class="orb orb-2"></span><span class="orb orb-3"></span></div>
+
+<header class="nav glass">
+  <div class="nav-inner">
+    <a class="logo" href="#top" aria-label="PANDA AI STUDIO home">
+      <span class="logo-mark">🐼</span>
+      <span class="logo-text">PANDA <em>AI STUDIO</em></span>
+    </a>
+    <nav class="nav-links" id="navLinks">
+      <a href="#create">Create</a>
+      <a href="#gallery">Gallery</a>
+      <a href="#history">History</a>
+      <a href="#setup">API Setup</a>
+    </nav>
+    <div class="nav-right">
+      <span class="mode-pill" id="modePill" title="Backend configuration status">… checking …</span>
+      <button class="hamburger" id="hamburger" aria-label="Menu" aria-expanded="false">☰</button>
+    </div>
+  </div>
+  <div class="demo-banner hidden" id="demoBanner">
+    <span class="pulse-dot"></span>
+    <p><strong>DEMO MODE</strong> — no video API key on this server. Previews below are <u>animated mock-ups, not AI videos</u>. <a href="#setup">Connect a free API key</a> for real generation.</p>
+  </div>
+</header>
+
+<main id="top">
+  <!-- HERO / CREATE -->
+  <section class="hero" id="create">
+    <div class="hero-copy">
+      <div class="badge">✨ NEW · Text-to-Video + Image-to-Video</div>
+      <h1>Turn Your <span class="grad">Imagination</span> Into <span class="grad-2">AI Videos</span></h1>
+      <p class="subtitle">Create stunning videos from text and images using AI.</p>
+      <div class="workflow-steps" aria-label="Workflow">
+        <span>1 Enter prompt</span><i>→</i><span>2 Select style</span><i>→</i><span>3 Choose ratio</span><i>→</i><span>4 Generate</span><i>→</i><span>5 Preview & Download</span>
+      </div>
+    </div>
+
+    <div class="studio-grid">
+      <!-- LEFT: controls -->
+      <div class="panel glass creator">
+        <label class="field-label" for="prompt">Describe your video</label>
+        <textarea id="prompt" rows="4" maxlength="1000" placeholder="e.g. A panda astronaut floating through a neon galaxy, cinematic slow motion…"></textarea>
+        <div class="prompt-row">
+          <span class="char-count"><span id="charCount">0</span>/1000</span>
+          <div class="prompt-actions">
+            <button class="chip-btn" id="surpriseBtn" type="button">🎲 Surprise me</button>
+            <button class="chip-btn" id="copyPromptBtn" type="button">⧉ Copy prompt</button>
+          </div>
+        </div>
+
+        <div class="field-label">Style</div>
+        <div class="seg-grid" id="styleGrid" role="radiogroup" aria-label="Style">
+          <button data-style="Cinematic" class="seg active" role="radio" aria-checked="true">🎬 Cinematic</button>
+          <button data-style="Realistic" class="seg" role="radio" aria-checked="false">📷 Realistic</button>
+          <button data-style="Anime" class="seg" role="radio" aria-checked="false">⛩️ Anime</button>
+          <button data-style="3D" class="seg" role="radio" aria-checked="false">🧊 3D</button>
+          <button data-style="Animation" class="seg" role="radio" aria-checked="false">✏️ Animation</button>
+        </div>
+
+        <div class="two-col">
+          <div>
+            <div class="field-label">Aspect ratio</div>
+            <div class="seg-grid ratios" id="ratioGrid" role="radiogroup" aria-label="Aspect ratio">
+              <button data-ratio="9:16" class="seg" role="radio" aria-checked="false" title="Vertical — TikTok, Reels, Shorts">9:16 <small>Vertical</small></button>
+              <button data-ratio="16:9" class="seg active" role="radio" aria-checked="true" title="Widescreen — YouTube">16:9 <small>Widescreen</small></button>
+              <button data-ratio="1:1" class="seg" role="radio" aria-checked="false" title="Square — Feed">1:1 <small>Square</small></button>
+            </div>
+          </div>
+          <div>
+            <div class="field-label">Duration</div>
+            <div class="seg-grid" id="durationGrid" role="radiogroup" aria-label="Duration">
+              <button data-duration="5" class="seg active" role="radio" aria-checked="true">5s</button>
+              <button data-duration="10" class="seg" role="radio" aria-checked="false">10s</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field-label">Image to video <span class="muted">(optional)</span></div>
+        <label class="upload glass-soft" id="uploadBox">
+          <input type="file" id="imageInput" accept="image/*" hidden />
+          <span class="upload-icon">🖼️</span>
+          <span class="upload-text"><strong>Drop or click to upload a start frame</strong><small>PNG / JPG · used for image-to-video</small></span>
+          <img id="uploadPreview" alt="" class="hidden" />
+          <button type="button" id="removeImage" class="hidden mini-danger">✕ remove</button>
+        </label>
+
+        <button class="generate-btn" id="generateBtn">
+          <span class="btn-glow"></span>
+          <span class="btn-label">✨ Generate Video</span>
+        </button>
+        <p class="hint">Free demo · No payment required · Real API when configured</p>
+        <div class="error hidden" id="errorBox" role="alert"></div>
+      </div>
+
+      <!-- RIGHT: preview -->
+      <div class="panel glass preview-panel">
+        <div class="preview-head">
+          <h2>Preview</h2>
+          <span class="status-chip" id="statusChip">Idle</span>
+        </div>
+
+        <div class="stage" id="stage" data-ratio="16:9">
+          <!-- idle -->
+          <div class="stage-idle" id="stageIdle">
+            <div class="panda-holo">🐼</div>
+            <p>Your video will appear here</p>
+            <small>Enter a prompt and hit Generate</small>
+          </div>
+          <!-- loading -->
+          <div class="stage-loading hidden" id="stageLoading">
+            <div class="loader-ring"></div>
+            <canvas id="demoCanvas" class="hidden"></canvas>
+            <div class="progress-wrap">
+              <div class="progress-bar"><span id="progressFill"></span></div>
+              <p id="progressLabel">Dreaming frames… 0%</p>
+            </div>
+            <span class="demo-tag hidden" id="demoTag">DEMO PREVIEW — not a real AI video</span>
+          </div>
+          <!-- video -->
+          <video id="videoPlayer" class="hidden" controls playsinline preload="metadata"></video>
+          <span class="demo-tag hidden" id="resultDemoTag">DEMO PREVIEW — not a real AI video</span>
+          <span class="real-tag hidden" id="realTag">✓ REAL AI VIDEO</span>
+        </div>
+
+        <div class="preview-meta">
+          <p class="meta-prompt" id="metaPrompt">—</p>
+          <div class="meta-row">
+            <span class="meta-chip" id="metaStyle">Cinematic</span>
+            <span class="meta-chip" id="metaRatio">16:9</span>
+            <span class="meta-chip" id="metaDuration">5s</span>
+          </div>
+        </div>
+
+        <div class="preview-actions">
+          <button id="downloadBtn" class="action-btn primary" disabled>⬇ Download MP4</button>
+          <button id="regenerateBtn" class="action-btn" disabled>↻ Regenerate</button>
+          <button id="copyLastBtn" class="action-btn" disabled>⧉ Copy prompt</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- EXAMPLES -->
+    <div class="examples">
+      <h3>Try an example prompt</h3>
+      <div class="example-chips" id="exampleChips"></div>
+    </div>
+  </section>
+
+  <!-- GALLERY -->
+  <section class="section" id="gallery">
+    <div class="section-head">
+      <h2>Gallery <span class="muted">· sample renders</span></h2>
+      <p>Curated samples to inspire your next prompt. Your generations appear in History.</p>
+    </div>
+    <div class="gallery-grid" id="galleryGrid"></div>
+  </section>
+
+  <!-- HISTORY -->
+  <section class="section" id="history">
+    <div class="section-head row">
+      <div>
+        <h2>Your history</h2>
+        <p>Stored privately in this browser (localStorage). Real video URLs + prompts.</p>
+      </div>
+      <button id="clearHistory" class="action-btn danger">Clear history</button>
+    </div>
+    <div class="history-grid" id="historyGrid">
+      <div class="empty-history" id="emptyHistory">No videos yet — generate your first one above. 🐼🎬</div>
+    </div>
+  </section>
+
+  <!-- SETUP -->
+  <section class="section" id="setup">
+    <div class="panel glass setup-panel">
+      <h2>🔌 Connect a real AI video API <span class="free-tag">free options</span></h2>
+      <p class="muted">Keys stay on the server (<code>server.js</code> proxy). They are never exposed to the browser. If no key is set, the site runs in clearly-labeled <strong>Demo Mode</strong> and never fakes a video.</p>
+      <div class="setup-grid">
+        <div class="setup-card">
+          <h3>Option A · Replicate ⭐ recommended</h3>
+          <ol>
+            <li>Create account at <code>replicate.com</code> (new accounts include free credit).</li>
+            <li>Copy token from <code>replicate.com/account/api-tokens</code>.</li>
+            <li><code>cp .env.example .env</code> → set <code>REPLICATE_API_TOKEN=…</code></li>
+            <li>Restart: <code>npm start</code>. Model default <code>minimax/video-01</code>.</li>
+          </ol>
+        </div>
+        <div class="setup-card">
+          <h3>Option B · Hugging Face (free tier)</h3>
+          <ol>
+            <li>Free token at <code>huggingface.co/settings/tokens</code>.</li>
+            <li>Set <code>HF_TOKEN=…</code> and optionally <code>HF_MODEL=cerspense/zeroscope_v2_576w</code>.</li>
+            <li>Restart server. Note: free Inference API can queue/warm-up.</li>
+          </ol>
+        </div>
+        <div class="setup-card">
+          <h3>Option C · Custom endpoint</h3>
+          <ol>
+            <li>Set <code>CUSTOM_VIDEO_API_URL</code> (+ optional <code>CUSTOM_VIDEO_API_KEY</code>).</li>
+            <li>Endpoint must accept <code>{prompt, style, aspectRatio, duration, image?}</code> and return <code>{videoUrl}</code>.</li>
+            <li>Use for Runway / Luma / Stability gateways. Full spec in <code>SETUP.md</code>.</li>
+          </ol>
+        </div>
+      </div>
+      <div class="deploy-row">
+        <span class="deploy-chip">▲ Deploy: Vercel / Render / Railway / Docker — <code>npm start</code>, port <code>$PORT</code></span>
+        <a class="action-btn primary" href="#create">Start creating ↑</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>🐼 <strong>PANDA AI STUDIO</strong> · Turn Your Imagination Into AI Videos · Demo mode is free, no payment required.</p>
+  <p class="muted">Never presents mock previews as real AI output. Real videos only come from a configured API.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
