@@ -1,0 +1,62 @@
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;background:#05070d;font-family:'Segoe UI',Roboto,Arial,sans-serif;color:#fff;user-select:none}
+#game-container,#game-container canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+.hidden{display:none!important}
+#loading{position:fixed;inset:0;background:#05070d;display:flex;flex-direction:column;gap:16px;align-items:center;justify-content:center;z-index:50;letter-spacing:3px;font-size:13px;color:#8fa0c0}
+.loader{width:54px;height:54px;border:4px solid #222;border-top-color:#00e5ff;border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.screen{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,rgba(5,10,25,.55),rgba(3,5,12,.92));backdrop-filter:blur(6px);overflow-y:auto;padding:18px}
+.menu-inner{width:min(860px,96vw);max-height:94vh;overflow-y:auto;background:linear-gradient(160deg,#0d1426,#070b16);border:1px solid #1e2c4d;border-radius:18px;padding:26px;text-align:center;box-shadow:0 20px 80px rgba(0,229,255,.12)}
+.menu-inner.small{width:min(420px,94vw)}
+.logo{font-size:52px;font-weight:900;letter-spacing:2px;font-style:italic}
+.logo span{color:#00e5ff}
+.tagline{letter-spacing:6px;font-size:11px;color:#8fa0c0;margin:4px 0 18px}
+.menu-inner h2{font-size:12px;letter-spacing:3px;color:#8fa0c0;margin:18px 0 10px}
+#car-select{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.car-card{background:#111a30;border:2px solid #22314f;border-radius:12px;padding:12px;cursor:pointer;transition:.15s}
+.car-card.selected{border-color:#00e5ff;box-shadow:0 0 18px rgba(0,229,255,.35)}
+.car-swatch{height:34px;border-radius:8px;margin-bottom:8px}
+.car-card h3{font-size:15px}.car-card p{font-size:11px;color:#8fa0c0;margin:2px 0 8px}
+.stat{display:flex;align-items:center;gap:6px;font-size:10px;color:#8fa0c0;margin-top:4px}
+.stat .bar{flex:1;height:6px;background:#0a0f1e;border-radius:4px;overflow:hidden}
+.stat .bar i{display:block;height:100%;background:linear-gradient(90deg,#00e5ff,#7CFC00)}
+#color-select{display:flex;gap:10px;justify-content:center}
+.color-dot{width:32px;height:32px;border-radius:50%;border:2px solid transparent;cursor:pointer}
+.color-dot.selected{border-color:#fff;transform:scale(1.15)}
+#mode-select{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.mode-btn{background:#16203a;border:1px solid #2a3c63;color:#cfe0ff;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer;font-size:12px}
+.mode-btn.selected{background:#00e5ff;color:#03131a;border-color:#00e5ff}
+#start-btn,#resume-btn,#again-btn{margin-top:20px;width:100%;padding:15px;font-size:17px;font-weight:900;letter-spacing:2px;border:none;border-radius:12px;cursor:pointer;background:linear-gradient(90deg,#00e5ff,#7CFC00);color:#03131a}
+.ghost{margin-top:10px;width:100%;padding:12px;border-radius:12px;background:transparent;border:1px solid #33456e;color:#cfe0ff;cursor:pointer}
+.help{margin-top:14px;font-size:11px;color:#8fa0c0;line-height:1.7}
+/* HUD */
+#hud{position:fixed;inset:0;z-index:10;pointer-events:none}
+#top-bar{position:absolute;top:10px;left:50%;transform:translateX(-50%);display:flex;gap:10px;align-items:center}
+#timer{background:rgba(0,0,0,.55);border:1px solid #2a3c63;padding:8px 16px;border-radius:10px;font-variant-numeric:tabular-nums;font-weight:800;font-size:18px}
+#lap-info,#score-info{background:rgba(0,229,255,.15);border:1px solid #00e5ff;padding:8px 12px;border-radius:10px;font-size:13px;font-weight:800}
+#minimap{position:absolute;top:64px;right:12px;width:130px;height:130px;border-radius:50%;border:2px solid rgba(0,229,255,.6);background:rgba(3,6,14,.72)}
+#dash{position:absolute;right:14px;bottom:14px;display:flex;gap:10px;align-items:flex-end}
+#speed-box{background:rgba(0,0,0,.6);border:1px solid #2a3c63;border-radius:14px;padding:10px 18px;text-align:center;min-width:110px}
+#speed{font-size:42px;font-weight:900;font-style:italic}
+#speed-box small{display:block;font-size:10px;letter-spacing:3px;color:#8fa0c0}
+#rpm-box{background:rgba(0,0,0,.6);border:1px solid #2a3c63;border-radius:14px;padding:10px 12px;width:170px}
+#rpm-bar{height:10px;background:#141c31;border-radius:6px;overflow:hidden}
+#rpm-bar i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#7CFC00,#ffd400 60%,#e10600)}
+#gear-row{display:flex;justify-content:space-between;margin:8px 2px 6px;font-weight:900}
+#gear{font-size:22px;color:#00e5ff}#nitro-label{font-size:10px;letter-spacing:2px;color:#8fa0c0;align-self:center}
+#nitro-bar{height:8px;background:#141c31;border-radius:6px;overflow:hidden}
+#nitro-bar i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#00e5ff,#ff2fb3)}
+#hud-buttons{position:absolute;top:64px;left:12px;display:flex;gap:8px;pointer-events:auto}
+#hud-buttons button{width:44px;height:44px;border-radius:12px;border:1px solid #2a3c63;background:rgba(0,0,0,.6);color:#fff;font-size:18px;cursor:pointer}
+#message{position:absolute;top:32%;width:100%;text-align:center;font-size:34px;font-weight:900;font-style:italic;text-shadow:0 4px 30px rgba(0,229,255,.6);opacity:0;transition:opacity .3s}
+/* Touch */
+#touch{position:fixed;inset:auto 0 0 0;z-index:11;display:flex;justify-content:space-between;align-items:flex-end;padding:0 12px calc(12px + env(safe-area-inset-bottom));pointer-events:none}
+.touch-left,.touch-right{display:flex;gap:10px;pointer-events:auto}
+#touch button{pointer-events:auto;width:74px;height:74px;border-radius:50%;border:2px solid rgba(0,229,255,.55);background:rgba(5,10,22,.55);color:#fff;font-size:24px;font-weight:900;touch-action:none}
+#touch button small{display:block;font-size:9px}
+#t-gas{border-color:rgba(124,252,0,.7)!important}
+#t-nitro{border-color:rgba(255,47,179,.8)!important;color:#ff9bd8!important}
+#t-drift{position:absolute;left:50%;transform:translateX(-50%);bottom:96px;width:auto!important;height:auto!important;border-radius:24px!important;padding:10px 22px;font-size:13px!important;letter-spacing:2px}
+#touch button:active{background:rgba(0,229,255,.35)}
+@media (min-width:820px){#touch{display:none!important}}
+@media (max-width:819px){#dash{bottom:120px;right:10px}#speed{font-size:30px}#rpm-box{width:130px}#minimap{width:96px;height:96px;top:60px}#car-select{grid-template-columns:1fr}.logo{font-size:36px}}
