@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.github
+.agents
+screenshots
+server/data
+.env
+.env.*
+!.env.example
+*.log
+*.pid
+.opencode-ssh
+.opencode-web
+.omgithub-runtime

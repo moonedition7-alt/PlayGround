@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: info-ranga-ai
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REPLICATE_MODEL
+        value: bytedance/seedance-1-lite
+      - key: REPLICATE_API_TOKEN
+        sync: false
+      - key: DATA_DIR
+        value: /var/data
+      - key: TRUST_PROXY
+        value: "1"
+    disk:
+      name: info-ranga-data
+      mountPath: /var/data
+      sizeGB: 1
