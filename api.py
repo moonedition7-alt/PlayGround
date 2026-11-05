@@ -6,6 +6,7 @@ restart. Bind to localhost unless an authenticated deployment layer is added.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -15,14 +16,25 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from app import LANGUAGES, dub_media
+from app import LANGUAGES, ROOT, dub_media
 
 MAX_UPLOAD_BYTES = 2 * 1024**3
 MAX_QUEUED_JOBS = 8
 
-api = FastAPI(title="OpenDub API", version="0.2.0", description="Local video/audio dubbing jobs")
+api = FastAPI(title="OpenDub API", version="0.3.0", description="Local video/audio dubbing jobs")
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:3000", "http://localhost:3000",
+        "http://127.0.0.1:8000", "http://localhost:8000",
+        "http://127.0.0.1:7860", "http://localhost:7860",
+    ],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="opendub")
 _jobs: dict[str, dict[str, Any]] = {}
 _lock = threading.Lock()
@@ -47,10 +59,11 @@ def _process(job_id: str, upload_path: Path, params: dict[str, Any]) -> None:
         with _lock:
             _jobs[job_id]["status"] = "running"
             _jobs[job_id]["progress"] = "Starting dubbing job"
+            _jobs[job_id]["progress_percent"] = 4
         for update in dub_media(
             str(upload_path), params["target_language"], params["source_language"],
-            params["speaker_gender"], params["speech_speed"], params["keep_music"],
-            params["glossary_text"], params["whisper_model"],
+            params["speaker_gender"], params["speaker_count"], params["speech_speed"],
+            params["keep_music"], params["glossary_text"], params["whisper_model"],
         ):
             message, video, audio, srt, vtt, transcript = update
             with _lock:
@@ -61,11 +74,17 @@ def _process(job_id: str, upload_path: Path, params: dict[str, Any]) -> None:
                     job["error"] = message
                 elif video and audio and srt and vtt:
                     job["status"] = "completed"
+                    job["progress_percent"] = 100
                     job["transcript"] = transcript
                     job["files"] = {
                         "video": str(video), "audio": str(audio),
                         "srt": str(srt), "vtt": str(vtt),
                     }
+                else:
+                    stage = re.match(r"\*\*(\d+)/7", message)
+                    if stage:
+                        # Stage milestones are approximate, not task-level telemetry.
+                        job["progress_percent"] = 8 + (int(stage.group(1)) - 1) * 12
     except Exception as exc:
         with _lock:
             if job_id in _jobs:
@@ -76,17 +95,24 @@ def _process(job_id: str, upload_path: Path, params: dict[str, Any]) -> None:
         shutil.rmtree(upload_path.parent, ignore_errors=True)
 
 
+@api.get("/", include_in_schema=False)
+def studio() -> FileResponse:
+    return FileResponse(ROOT / "dist" / "index.html")
+
+
 @api.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@api.post("/api/jobs", status_code=202)
+@api.post("/dub", status_code=202)
+@api.post("/api/jobs", status_code=202, include_in_schema=False)
 async def create_job(
     file: UploadFile = File(...),
     target_language: str = Form("Hindi"),
     source_language: str = Form("Auto-detect"),
     speaker_gender: str = Form("Female"),
+    speaker_count: int = Form(1),
     speech_speed: int = Form(0),
     keep_music: bool = Form(False),
     glossary_text: str = Form(""),
@@ -99,6 +125,8 @@ async def create_job(
         raise HTTPException(status_code=422, detail="Unsupported source language")
     if speaker_gender not in {"Female", "Male"}:
         raise HTTPException(status_code=422, detail="speaker_gender must be Female or Male")
+    if speaker_count < 1 or speaker_count > 4:
+        raise HTTPException(status_code=422, detail="speaker_count must be between 1 and 4")
     if speech_speed < -20 or speech_speed > 20 or speech_speed % 5:
         raise HTTPException(status_code=422, detail="speech_speed must be -20..20 in steps of 5")
     if whisper_model not in {"tiny", "base", "small", "medium", "large-v3"}:
@@ -136,11 +164,12 @@ async def create_job(
                 raise HTTPException(status_code=429, detail="The local job queue is full; try again later")
             _jobs[job_id] = {
                 "id": job_id, "status": "queued", "progress": "Waiting for the local worker",
-                "filename": safe_name, "files": {},
+                "progress_percent": 0, "filename": safe_name, "files": {},
             }
             params = {
                 "target_language": target_language, "source_language": source_language,
-                "speaker_gender": speaker_gender, "speech_speed": speech_speed,
+                "speaker_gender": speaker_gender, "speaker_count": speaker_count,
+                "speech_speed": speech_speed,
                 "keep_music": keep_music, "glossary_text": glossary_text,
                 "whisper_model": whisper_model,
             }
@@ -151,7 +180,8 @@ async def create_job(
     return _snapshot(job_id)
 
 
-@api.get("/api/jobs/{job_id}")
+@api.get("/dub/{job_id}")
+@api.get("/api/jobs/{job_id}", include_in_schema=False)
 def get_job(job_id: str) -> dict[str, Any]:
     return _snapshot(job_id)
 

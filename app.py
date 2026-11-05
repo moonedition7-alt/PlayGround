@@ -186,6 +186,43 @@ def _edge_voice(text: str, voice: str, rate: int, output_path: Path):
     asyncio.run(save())
 
 
+def _speaker_voices(target_language: str, preferred_gender: str, count: int) -> list[str]:
+    """Choose distinct free Edge voices for turn-based voice rotation, when available."""
+    import edge_tts
+
+    fallback = {
+        "Hindi": ("hi-IN-SwaraNeural", "hi-IN-MadhurNeural"),
+        "Kannada": ("kn-IN-SapnaNeural", "kn-IN-GaganNeural"),
+        "Tamil": ("ta-IN-PallaviNeural", "ta-IN-ValluvarNeural"),
+        "Telugu": ("te-IN-ShrutiNeural", "te-IN-MohanNeural"),
+        "Malayalam": ("ml-IN-SobhanaNeural", "ml-IN-MidhunNeural"),
+        "Marathi": ("mr-IN-AarohiNeural", "mr-IN-ManoharNeural"),
+        "Bengali": ("bn-IN-TanishaaNeural", "bn-IN-BashkarNeural"),
+        "Gujarati": ("gu-IN-DhwaniNeural", "gu-IN-NiranjanNeural"),
+        "Punjabi": ("pa-IN-VaaniNeural", "pa-IN-OjasNeural"),
+        "Odia": ("or-IN-SubhasiniNeural", "or-IN-PrabhatNeural"),
+        "Urdu": ("ur-PK-UzmaNeural", "ur-PK-AsadNeural"),
+        "English": ("en-US-AriaNeural", "en-US-GuyNeural"),
+    }[target_language]
+    preferred_gender = preferred_gender.lower()
+
+    async def list_voices():
+        return await edge_tts.list_voices()
+
+    try:
+        available = asyncio.run(list_voices())
+        locale = fallback[0].rsplit("-", 1)[0]
+        localized = [voice for voice in available if voice.get("Locale") == locale]
+        localized.sort(key=lambda voice: (voice.get("Gender", "") != preferred_gender.title(), voice.get("ShortName", "")))
+        names = [voice["ShortName"] for voice in localized if voice.get("ShortName")]
+    except Exception:
+        names = list(fallback if preferred_gender == "female" else reversed(fallback))
+    unique = list(dict.fromkeys(names or fallback))
+    # The requested count controls the number of turn voices, bounded by the voices
+    # Edge TTS actually offers for this locale. This does not perform diarization.
+    return unique[:max(1, min(int(count), 4))] or [fallback[0]]
+
+
 def _srt_time(seconds: float) -> str:
     millis = max(0, round(seconds * 1000))
     hours, millis = divmod(millis, 3_600_000)
@@ -205,7 +242,8 @@ def _write_subtitles(rows, path: Path, vtt: bool = False):
 
 
 def dub_media(media_file, target_language: str, source_language: str, speaker_gender: str,
-              speech_speed: int, keep_music: bool, glossary_text: str, whisper_model: str) -> Iterator:
+              speaker_count: int, speech_speed: int, keep_music: bool, glossary_text: str,
+              whisper_model: str) -> Iterator:
     """Gradio generator: yields progress text and then all deliverables."""
     if media_file is None:
         yield "Upload a video or audio file first.", None, None, None, None, None
@@ -219,6 +257,9 @@ def dub_media(media_file, target_language: str, source_language: str, speaker_ge
         return
     if target_language not in LANGUAGES:
         yield "Select a supported target language.", None, None, None, None, None
+        return
+    if not 1 <= int(speaker_count) <= 4:
+        yield "Speaker count must be between 1 and 4.", None, None, None, None, None
         return
 
     job_dir = OUTPUT_DIR / uuid.uuid4().hex
@@ -251,16 +292,8 @@ def dub_media(media_file, target_language: str, source_language: str, speaker_ge
         source_code = NLLB_CODES.get(detected)
         if not source_code:
             raise RuntimeError(f"Detected language '{detected}' is not supported by the included NLLB model. Select a supported source language or provide a different recording.")
-        target_code, base_voice, _ = LANGUAGES[target_language]
-        voice = base_voice
-        if speaker_gender == "Male":
-            voice_map = {
-                "Hindi": "hi-IN-MadhurNeural", "Kannada": "kn-IN-GaganNeural", "Tamil": "ta-IN-ValluvarNeural",
-                "Telugu": "te-IN-MohanNeural", "Malayalam": "ml-IN-MidhunNeural", "Marathi": "mr-IN-ManoharNeural",
-                "Bengali": "bn-IN-BashkarNeural", "Gujarati": "gu-IN-NiranjanNeural", "Punjabi": "pa-IN-OjasNeural",
-                "Odia": "or-IN-PrabhatNeural", "Urdu": "ur-PK-AsadNeural", "English": "en-US-GuyNeural",
-            }
-            voice = voice_map.get(target_language, base_voice)
+        target_code, _, _ = LANGUAGES[target_language]
+        speaker_voices = _speaker_voices(target_language, speaker_gender, speaker_count)
         glossary = [t.strip() for t in re.split(r"[,\n]", glossary_text or "") if t.strip()]
 
         yield "**4/7 — Translating segments…** The first run downloads the open translation model (~2.5 GB).", None, None, None, None, None
@@ -269,7 +302,7 @@ def dub_media(media_file, target_language: str, source_language: str, speaker_ge
             translated = _translate(original, source_code, target_code, glossary)
             translated_rows.append((start, end, original, translated or original))
 
-        yield "**5/7 — Generating target speech…** edge-tts requires an internet connection and is free to use.", None, None, None, None, None
+        yield f"**5/7 — Generating target speech…** Rotating {len(speaker_voices)} available voice(s) across turns; edge-tts needs internet.", None, None, None, None, None
         from pydub import AudioSegment
         from pydub.effects import normalize
 
@@ -279,6 +312,7 @@ def dub_media(media_file, target_language: str, source_language: str, speaker_ge
             slot_ms = max(80, round((end - start) * 1000))
             # If speech cannot fit at 1.25x, shorten the translation and synthesize again.
             # This keeps neighboring segments from overlapping and subtitles match the delivered audio.
+            voice = speaker_voices[index % len(speaker_voices)]
             for attempt in range(6):
                 _edge_voice(translated, voice, int(speech_speed), generated)
                 clip = AudioSegment.from_file(generated).set_frame_rate(24000).set_channels(1)
@@ -346,7 +380,8 @@ def build_app():
             with gr.Column():
                 source = gr.Dropdown(["Auto-detect", "English", "Hindi", "Kannada", "Tamil", "Telugu", "Malayalam", "Marathi", "Bengali", "Gujarati", "Punjabi", "Odia", "Urdu"], value="Auto-detect", label="Source language")
                 target = gr.Dropdown(list(LANGUAGES), value="Hindi", label="Target language")
-                gender = gr.Radio(["Female", "Male"], value="Female", label="Generated voice")
+                gender = gr.Radio(["Female", "Male"], value="Female", label="Preferred voice")
+                speakers = gr.Slider(1, 4, value=1, step=1, label="Number of speaker voices (turn rotation; no diarization)")
         with gr.Accordion("Advanced options", open=False):
             with gr.Row():
                 keep_music = gr.Checkbox(value=False, label="Preserve background music (requires Demucs; slow on CPU)")
@@ -362,10 +397,10 @@ def build_app():
             srt_out = gr.File(label="Subtitles (SRT)")
             vtt_out = gr.File(label="Subtitles (VTT)")
         transcript = gr.Textbox(label="Transcript and translation", lines=12, interactive=False)
-        create.click(dub_media, [media, target, source, gender, speed, keep_music, glossary, model], [status, video_out, audio_out, srt_out, vtt_out, transcript], concurrency_limit=1)
+        create.click(dub_media, [media, target, source, gender, speakers, speed, keep_music, glossary, model], [status, video_out, audio_out, srt_out, vtt_out, transcript], concurrency_limit=1)
         gr.Markdown("---\n**Privacy:** media is processed locally and temporary working files are deleted after each job. Completed downloads remain in `outputs/`. Translation models and Edge TTS are subject to their upstream licenses and service terms.")
     return demo
 
 
 if __name__ == "__main__":
-    build_app().queue(default_concurrency_limit=1, max_size=8).launch(server_name=os.getenv("HOST", "127.0.0.1"), server_port=int(os.getenv("PORT", "7860")), share=False)
+    build_app().queue(default_concurrency_limit=1, max_size=8).launch(server_name=os.getenv("HOST", "0.0.0.0"), server_port=int(os.getenv("PORT", "7860")), share=False)
