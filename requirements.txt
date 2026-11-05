@@ -1,4 +1,4 @@
-# Tested target: CPython 3.11. Install FFmpeg separately for local development.
+# Python dependencies for Google Colab and Hugging Face Spaces.
 gradio>=5.20,<6
 faster-whisper>=1.1,<2
 transformers>=4.46,<5
