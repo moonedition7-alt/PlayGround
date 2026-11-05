@@ -21,13 +21,13 @@ The pipeline uses faster-whisper `small`, NLLB-200 distilled 600M, and Edge TTS.
 
 1. **Open the notebook.** Open [`opendub_colab.ipynb`](https://colab.research.google.com/github/moonedition7-alt/PlayGround/blob/main/opendub_colab.ipynb) in Google Colab. In **Runtime → Change runtime type**, select a T4 GPU when one is available.
 2. **Launch the backend.** Run the notebook cells from top to bottom. It installs FFmpeg and the Python dependencies, configures faster-whisper for GPU float16 (CPU int8 fallback), and launches Gradio with `share=True`. The first job downloads model weights and caches them for the session.
-3. **Copy the backend URL.** Copy the public `https://....gradio.live` URL printed by the last cell. The URL is temporary and accessible to anyone who has it; do not use a shared session for private media.
+3. **Configure the frontend.** Before serving the studio, set the `BACKEND_URL` constant at the top of `dist/index.html` to the active Gradio server address. The address printed by Colab is temporary and anyone who has it may be able to access the server; do not use a shared session for private media.
 4. **Open the browser studio.** Serve `dist/` locally or host it on a static web host. For local use, clone this repository on your computer and run:
    ```bash
    python3 -m http.server 3000 --directory dist
    ```
-   Then open <http://localhost:3000>. The studio loads `@gradio/client` and ffmpeg.wasm from public CDNs; no frontend build step is needed.
-5. **Connect and dub a test clip.** Paste the Gradio URL into **Gradio backend URL**, click **Test connection**, choose a clear 10–30 second clip, select languages and voice options, then click **Create dub**. Download the MP4, MP3, SRT, and translated TXT when complete.
+   Then open the local studio. It loads `@gradio/client` and ffmpeg.wasm from public CDNs; no frontend build step is needed.
+5. **Dub a test clip.** The studio connects automatically and offers Retry if the server is unavailable. Choose a clear 10–30 second clip, select languages and voice options, then click **Create dub**. Download the MP4, MP3, SRT, and translated TXT when complete.
 
 The browser uploads only an extracted mono WAV to Gradio. The source video/audio stays in the browser and is used for local MP4 muxing. Files over 200 MB and clips longer than 10 minutes are rejected. The MP4 video stream is copied without re-encoding; audio-only inputs produce an MP4 container with dubbed audio but no video track.
 
@@ -46,13 +46,13 @@ pip install -r requirements.txt
 HOST=127.0.0.1 python app.py
 ```
 
-Open <http://127.0.0.1:7860>, then use that URL as the backend URL in the studio. To make the local backend reachable from another machine, configure a trusted network or tunnel; do not expose this unauthenticated prototype publicly. To create a temporary Gradio share link, launch with `SHARE=true python app.py`.
+Set the `BACKEND_URL` constant in `dist/index.html` to the local server address before opening the studio. To make the local backend reachable from another machine, configure a trusted network or tunnel; do not expose this unauthenticated prototype publicly. To create a temporary Gradio share link, launch with `SHARE=true python app.py`.
 
 For CUDA, install a PyTorch build compatible with your CUDA runtime. The app selects CUDA and float16 automatically when available. `WHISPER_DEVICE` and `WHISPER_COMPUTE_TYPE` can override the faster-whisper device and compute type. Models are cached by their respective libraries under the normal Hugging Face cache location.
 
 ## Hugging Face Spaces
 
-This repository includes Gradio Space metadata in the README front matter, with `app.py` as the entry point. The Space installs Python dependencies from `requirements.txt` and system packages from `packages.txt` (`ffmpeg` and `libsndfile1`). A free CPU Space may not have enough memory or compute for model downloads and inference; GPU access is recommended. Once the Space is running, paste its URL into the browser studio and click **Test connection**.
+This repository includes Gradio Space metadata in the README front matter, with `app.py` as the entry point. The Space installs Python dependencies from `requirements.txt` and system packages from `packages.txt` (`ffmpeg` and `libsndfile1`). A free CPU Space may not have enough memory or compute for model downloads and inference; GPU access is recommended. Set the `BACKEND_URL` constant in `dist/index.html` to the Space address; the studio connects automatically when loaded.
 
 The app has no user accounts, authentication, durable job isolation, or quotas. A public Space or Gradio share link can be used by anyone who can reach it. Review hosting, model, dependency, and Edge TTS terms for your use case.
 
