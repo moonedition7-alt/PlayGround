@@ -1,6 +1,7 @@
 # Python dependencies for Google Colab and Hugging Face Spaces.
 gradio>=5.20,<6
 faster-whisper>=1.1,<2
+av>=14,<19
 transformers>=4.46,<5
 torch>=2.2,<3
 sentencepiece>=0.2,<1
