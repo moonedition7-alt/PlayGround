@@ -1,0 +1,24 @@
+
+screenshots/
+
+*.log
+
+*.pid
+
+.agents/
+
+.agentsweb/
+
+.omgithub-runtime/
+
+.opencode-ssh/
+
+.opencode-web/
+
+node_modules/
+
+# Python and generated outputs
+__pycache__/
+*.py[cod]
+.venv/
+outputs/

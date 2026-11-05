@@ -1,0 +1,12 @@
+# Tested target: CPython 3.11. Install FFmpeg separately (see README).
+gradio>=5.20,<6
+faster-whisper>=1.1,<2
+transformers>=4.46,<5
+torch>=2.2,<3
+sentencepiece>=0.2,<1
+edge-tts>=7,<8
+pydub>=0.25,<1
+demucs>=4,<5
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+python-multipart>=0.0.20,<1
