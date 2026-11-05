@@ -1,17 +1,17 @@
-"""Local, free-to-run video dubbing MVP (Gradio).
+"""OpenDub: Gradio inference backend for the browser-based dubbing studio.
 
-Pipeline: FFmpeg -> optional Demucs -> faster-whisper -> NLLB-200 -> edge-tts
--> time fitting/mix -> FFmpeg MP4 mux. Models are downloaded on first use.
+The browser extracts a mono WAV and keeps the original media local. This backend
+returns dubbed audio, translated subtitles, and text; the browser muxes MP4 locally
+so the source video is never uploaded to the inference backend.
 """
 from __future__ import annotations
 
 import asyncio
 import os
-import re
 import shutil
 import subprocess
-import sys
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 from typing import Iterator
@@ -21,386 +21,294 @@ import gradio as gr
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", ROOT / "outputs")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-MAX_SECONDS = 3600
+MAX_BYTES = 200 * 1024 * 1024
+MAX_SECONDS = 10 * 60
+MAX_TTS_CONCURRENCY = 8
+WHISPER_MODEL = "small"
+TRANSLATION_MODEL = "facebook/nllb-200-distilled-600M"
+
 LANGUAGES = {
-    "Hindi": ("hin_Deva", "hi-IN-SwaraNeural", "hi"),
-    "Kannada": ("kan_Knda", "kn-IN-SapnaNeural", "kn"),
-    "Tamil": ("tam_Taml", "ta-IN-PallaviNeural", "ta"),
-    "Telugu": ("tel_Telu", "te-IN-ShrutiNeural", "te"),
-    "Malayalam": ("mal_Mlym", "ml-IN-SobhanaNeural", "ml"),
-    "Marathi": ("mar_Deva", "mr-IN-AarohiNeural", "mr"),
-    "Bengali": ("ben_Beng", "bn-IN-TanishaaNeural", "bn"),
-    "Gujarati": ("guj_Gujr", "gu-IN-DhwaniNeural", "gu"),
-    "Punjabi": ("pan_Guru", "pa-IN-VaaniNeural", "pa"),
-    "Odia": ("ory_Orya", "or-IN-SubhasiniNeural", "or"),
-    "Urdu": ("urd_Arab", "ur-PK-UzmaNeural", "ur"),
-    "English": ("eng_Latn", "en-US-AriaNeural", "en"),
+    "Hindi": ("hin_Deva", "hi", "hi-IN-SwaraNeural", "hi-IN-MadhurNeural"),
+    "Kannada": ("kan_Knda", "kn", "kn-IN-SapnaNeural", "kn-IN-GaganNeural"),
+    "Tamil": ("tam_Taml", "ta", "ta-IN-PallaviNeural", "ta-IN-ValluvarNeural"),
+    "Telugu": ("tel_Telu", "te", "te-IN-ShrutiNeural", "te-IN-MohanNeural"),
+    "Malayalam": ("mal_Mlym", "ml", "ml-IN-SobhanaNeural", "ml-IN-MidhunNeural"),
+    "Marathi": ("mar_Deva", "mr", "mr-IN-AarohiNeural", "mr-IN-ManoharNeural"),
+    "Bengali": ("ben_Beng", "bn", "bn-IN-TanishaaNeural", "bn-IN-BashkarNeural"),
+    "Gujarati": ("guj_Gujr", "gu", "gu-IN-DhwaniNeural", "gu-IN-NiranjanNeural"),
+    "English": ("eng_Latn", "en", "en-US-AriaNeural", "en-US-GuyNeural"),
 }
-# NLLB uses FLORES-200 language identifiers.
-NLLB_CODES = {
-    "en": "eng_Latn", "eng": "eng_Latn", "hi": "hin_Deva", "hin": "hin_Deva",
-    "kn": "kan_Knda", "kan": "kan_Knda", "ta": "tam_Taml", "tam": "tam_Taml",
-    "te": "tel_Telu", "tel": "tel_Telu", "ml": "mal_Mlym", "mal": "mal_Mlym",
-    "mr": "mar_Deva", "mar": "mar_Deva", "bn": "ben_Beng", "ben": "ben_Beng",
-    "gu": "guj_Gujr", "guj": "guj_Gujr", "pa": "pan_Guru", "pan": "pan_Guru",
-    "or": "ory_Orya", "ory": "ory_Orya", "ur": "urd_Arab", "urd": "urd_Arab",
-    "es": "spa_Latn", "spa": "spa_Latn", "fr": "fra_Latn", "fra": "fra_Latn",
-    "de": "deu_Latn", "deu": "deu_Latn", "it": "ita_Latn", "ita": "ita_Latn",
-    "pt": "por_Latn", "por": "por_Latn", "ru": "rus_Cyrl", "rus": "rus_Cyrl",
-    "zh": "zho_Hans", "zho": "zho_Hans", "ja": "jpn_Jpan", "jpn": "jpn_Jpan",
-    "ko": "kor_Hang", "kor": "kor_Hang", "ar": "arb_Arab", "ara": "arb_Arab",
-    "nl": "nld_Latn", "nld": "nld_Latn", "tr": "tur_Latn", "tur": "tur_Latn",
-}
-WHISPER_LANGUAGES = {
-    "English": "en", "Hindi": "hi", "Kannada": "kn", "Tamil": "ta", "Telugu": "te",
-    "Malayalam": "ml", "Marathi": "mr", "Bengali": "bn", "Gujarati": "gu",
-    "Punjabi": "pa", "Odia": "or", "Urdu": "ur",
-}
+SOURCE_CODES = {"Auto-detect": None, **{name: data[1] for name, data in LANGUAGES.items()}}
+NLLB_CODES = {data[1]: data[0] for data in LANGUAGES.values()}
+
+_whisper_lock = threading.Lock()
+_whisper_models = {}
+_translator = None
+_translation_lock = threading.Lock()
 
 
-def _run(command: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess:
+def _run(command: list[str], timeout: int = 900) -> subprocess.CompletedProcess:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as exc:
-        raise RuntimeError(f"Required program not found: {command[0]}. Install FFmpeg and add it to PATH.") from exc
+        raise RuntimeError(f"Required program is missing: {command[0]}. Install FFmpeg and ffprobe.") from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("A media processing step timed out. Try a shorter file or a machine with more memory.") from exc
+        raise RuntimeError("Media processing timed out. Retry with a shorter clip.") from exc
     if result.returncode:
-        detail = (result.stderr or result.stdout)[-2500:]
-        raise RuntimeError(f"Command failed ({command[0]}):\n{detail}")
+        detail = (result.stderr or result.stdout)[-1800:]
+        raise RuntimeError(f"{command[0]} failed: {detail}")
     return result
 
 
-def _duration(path: str | Path) -> float:
+def _duration(path: Path) -> float:
     result = _run([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
     ])
     try:
         duration = float(result.stdout.strip())
     except ValueError as exc:
-        raise RuntimeError("Could not read the media duration. Check that the uploaded file is valid.") from exc
+        raise RuntimeError("Could not read audio duration. Make sure the WAV is valid.") from exc
     if duration <= 0 or duration > MAX_SECONDS:
-        raise RuntimeError("Files must be longer than zero and no more than 60 minutes.")
+        raise RuntimeError("Clips must be longer than zero and no more than 10 minutes.")
     return duration
 
 
-def _has_video(path: str | Path) -> bool:
-    result = _run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)])
-    return bool(result.stdout.strip())
+def _cuda_available() -> bool:
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
 
 
-def _transcribe(audio_path: Path, model_name: str, language: str):
+def _transcribe(audio_path: Path, source_language: str):
     from faster_whisper import WhisperModel
 
-    compute = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-    device = os.getenv("WHISPER_DEVICE", "cpu")
-    model = WhisperModel(model_name, device=device, compute_type=compute)
-    selected = None if language == "Auto-detect" else WHISPER_LANGUAGES.get(language)
-    if language != "Auto-detect" and selected is None:
-        raise RuntimeError(f"Unsupported source language: {language}")
-    segments, info = model.transcribe(str(audio_path), language=selected, word_timestamps=True, vad_filter=True)
-    # Consume the lazy generator while the model is in scope.
-    raw = [(float(s.start), float(s.end), (s.text or "").strip()) for s in segments if (s.text or "").strip()]
-    return raw, info.language
-
-
-def _sentence_segments(raw: list[tuple[float, float, str]], duration: float):
-    """Merge Whisper chunks into sentence-sized dubbing slots without overlap."""
-    merged: list[list[float | str]] = []
-    for start, end, text in raw:
-        start = max(0.0, min(start, duration))
-        end = max(start + 0.05, min(end, duration))
-        if merged and not re.search(r"[.!?。！？…]$", str(merged[-1][2])) and start - float(merged[-1][1]) < 0.8:
-            merged[-1][1] = max(float(merged[-1][1]), end)
-            merged[-1][2] = (str(merged[-1][2]) + " " + text).strip()
-        else:
-            merged.append([start, end, text])
-    clean = []
-    previous_end = 0.0
-    for start, end, text in merged:
-        start = max(float(start), previous_end)
-        end = max(start + 0.08, float(end))
-        end = min(duration, end)
-        if end > start and str(text).strip():
-            clean.append((start, end, str(text).strip()))
-            previous_end = end
-    return clean
-
-
-_TRANSLATOR = None
+    use_gpu = os.getenv("WHISPER_DEVICE", "cuda" if _cuda_available() else "cpu") == "cuda"
+    compute = "float16" if use_gpu else "int8"
+    cache_key = (WHISPER_MODEL, "cuda" if use_gpu else "cpu", compute)
+    with _whisper_lock:
+        model = _whisper_models.get(cache_key)
+        if model is None:
+            compute = os.getenv("WHISPER_COMPUTE_TYPE", compute)
+            model = WhisperModel(WHISPER_MODEL, device=cache_key[1], compute_type=compute)
+            _whisper_models[cache_key] = model
+    language = SOURCE_CODES.get(source_language)
+    segments, info = model.transcribe(str(audio_path), language=language, beam_size=1, vad_filter=True)
+    rows = [
+        (max(0.0, float(seg.start)), max(0.05, float(seg.end)), (seg.text or "").strip())
+        for seg in segments if (seg.text or "").strip()
+    ]
+    return rows, info.language
 
 
 def _get_translator():
-    global _TRANSLATOR
-    if _TRANSLATOR is None:
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-        import torch
+    global _translator
+    with _translation_lock:
+        if _translator is None:
+            import torch
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-        name = os.getenv("TRANSLATION_MODEL", "facebook/nllb-200-distilled-600M")
-        _TRANSLATOR = (AutoTokenizer.from_pretrained(name), AutoModelForSeq2SeqLM.from_pretrained(name), torch)
-    return _TRANSLATOR
+            model_id = os.getenv("TRANSLATION_MODEL", TRANSLATION_MODEL)
+            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+            # CUDA/T4 inference uses fp16; CPU fallback stays fp32 for compatibility.
+            if torch.cuda.is_available():
+                model = model.to("cuda", dtype=torch.float16)
+            model.eval()
+            _translator = (tokenizer, model, torch)
+    return _translator
 
 
-def _translate_piece(text: str, source_code: str, target_code: str) -> str:
-    if not text.strip():
-        return text
+def _translate_batch(texts: list[str], source_code: str, target_code: str) -> list[str]:
     tokenizer, model, torch = _get_translator()
     tokenizer.src_lang = source_code
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-    target_id = tokenizer.convert_tokens_to_ids(target_code)
-    with torch.inference_mode():
-        output = model.generate(**inputs, forced_bos_token_id=target_id, max_new_tokens=256, num_beams=3)
-    return tokenizer.batch_decode(output, skip_special_tokens=True)[0].strip()
-
-
-def _translate(text: str, source_code: str, target_code: str, glossary: list[str]) -> str:
-    # Translate around glossary matches rather than asking the model to copy names/numbers.
-    terms = [term.strip() for term in glossary if term.strip()]
-    if not terms:
-        return _translate_piece(text, source_code, target_code)
-    pattern = re.compile("(" + "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)) + ")", re.IGNORECASE)
-    chunks = pattern.split(text)
-    result = []
-    for chunk in chunks:
-        if not chunk:
-            continue
-        if pattern.fullmatch(chunk):
-            result.append(chunk)
-            continue
-        # Keep the original separators around copied glossary terms; joining
-        # translated fragments with added spaces can separate punctuation.
-        leading = chunk[:len(chunk) - len(chunk.lstrip())]
-        trailing = chunk[len(chunk.rstrip()):]
-        content = chunk.strip()
-        translated = _translate_piece(content, source_code, target_code) if content else ""
-        result.append(leading + (translated or content) + trailing)
-    return "".join(result).strip()
-
-
-def _edge_voice(text: str, voice: str, rate: int, output_path: Path):
-    import edge_tts
-
-    async def save():
-        await edge_tts.Communicate(text, voice, rate=f"{rate:+d}%").save(str(output_path))
-
-    asyncio.run(save())
-
-
-def _speaker_voices(target_language: str, preferred_gender: str, count: int) -> list[str]:
-    """Choose distinct free Edge voices for turn-based voice rotation, when available."""
-    import edge_tts
-
-    fallback = {
-        "Hindi": ("hi-IN-SwaraNeural", "hi-IN-MadhurNeural"),
-        "Kannada": ("kn-IN-SapnaNeural", "kn-IN-GaganNeural"),
-        "Tamil": ("ta-IN-PallaviNeural", "ta-IN-ValluvarNeural"),
-        "Telugu": ("te-IN-ShrutiNeural", "te-IN-MohanNeural"),
-        "Malayalam": ("ml-IN-SobhanaNeural", "ml-IN-MidhunNeural"),
-        "Marathi": ("mr-IN-AarohiNeural", "mr-IN-ManoharNeural"),
-        "Bengali": ("bn-IN-TanishaaNeural", "bn-IN-BashkarNeural"),
-        "Gujarati": ("gu-IN-DhwaniNeural", "gu-IN-NiranjanNeural"),
-        "Punjabi": ("pa-IN-VaaniNeural", "pa-IN-OjasNeural"),
-        "Odia": ("or-IN-SubhasiniNeural", "or-IN-PrabhatNeural"),
-        "Urdu": ("ur-PK-UzmaNeural", "ur-PK-AsadNeural"),
-        "English": ("en-US-AriaNeural", "en-US-GuyNeural"),
-    }[target_language]
-    preferred_gender = preferred_gender.lower()
-
-    async def list_voices():
-        return await edge_tts.list_voices()
-
-    try:
-        available = asyncio.run(list_voices())
-        locale = fallback[0].rsplit("-", 1)[0]
-        localized = [voice for voice in available if voice.get("Locale") == locale]
-        localized.sort(key=lambda voice: (voice.get("Gender", "") != preferred_gender.title(), voice.get("ShortName", "")))
-        names = [voice["ShortName"] for voice in localized if voice.get("ShortName")]
-    except Exception:
-        names = list(fallback if preferred_gender == "female" else reversed(fallback))
-    unique = list(dict.fromkeys(names or fallback))
-    # The requested count controls the number of turn voices, bounded by the voices
-    # Edge TTS actually offers for this locale. This does not perform diarization.
-    return unique[:max(1, min(int(count), 4))] or [fallback[0]]
+    results = []
+    for offset in range(0, len(texts), 16):
+        batch = texts[offset:offset + 16]
+        encoded = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=512)
+        device = next(model.parameters()).device
+        encoded = {key: value.to(device) for key, value in encoded.items()}
+        with torch.inference_mode():
+            tokens = model.generate(
+                **encoded,
+                forced_bos_token_id=tokenizer.convert_tokens_to_ids(target_code),
+                max_new_tokens=256,
+                num_beams=2,
+            )
+        results.extend(text.strip() for text in tokenizer.batch_decode(tokens, skip_special_tokens=True))
+    return results
 
 
 def _srt_time(seconds: float) -> str:
     millis = max(0, round(seconds * 1000))
     hours, millis = divmod(millis, 3_600_000)
     minutes, millis = divmod(millis, 60_000)
-    seconds_i, millis = divmod(millis, 1000)
-    return f"{hours:02}:{minutes:02}:{seconds_i:02},{millis:03}"
+    whole, millis = divmod(millis, 1000)
+    return f"{hours:02}:{minutes:02}:{whole:02},{millis:03}"
 
 
-def _write_subtitles(rows, path: Path, vtt: bool = False):
-    blocks = []
-    for index, (start, end, _, translated) in enumerate(rows, 1):
-        begin = _srt_time(start).replace(",", ".") if vtt else _srt_time(start)
-        finish = _srt_time(end).replace(",", ".") if vtt else _srt_time(end)
-        cue = f"{begin} --> {finish}\n{translated}"
-        blocks.append(cue if vtt else f"{index}\n{cue}")
-    path.write_text(("WEBVTT\n\n" if vtt else "") + "\n\n".join(blocks) + "\n", encoding="utf-8")
+def _write_srt(rows, path: Path) -> None:
+    entries = [
+        f"{index}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}"
+        for index, (start, end, text) in enumerate(rows, 1)
+    ]
+    path.write_text("\n\n".join(entries) + "\n", encoding="utf-8")
 
 
-def dub_media(media_file, target_language: str, source_language: str, speaker_gender: str,
-              speaker_count: int, speech_speed: int, keep_music: bool, glossary_text: str,
-              whisper_model: str) -> Iterator:
-    """Gradio generator: yields progress text and then all deliverables."""
-    if media_file is None:
-        yield "Upload a video or audio file first.", None, None, None, None, None
-        return
-    source_path = Path(media_file)
-    if not source_path.is_file():
-        yield "The uploaded file is no longer available. Please upload it again.", None, None, None, None, None
-        return
-    if source_path.stat().st_size > 2 * 1024**3:
-        yield "The upload exceeds the 2 GB limit. Choose a smaller file.", None, None, None, None, None
-        return
-    if target_language not in LANGUAGES:
-        yield "Select a supported target language.", None, None, None, None, None
-        return
-    if not 1 <= int(speaker_count) <= 4:
-        yield "Speaker count must be between 1 and 4.", None, None, None, None, None
-        return
+async def _synthesize(texts: list[str], voice: str, rate: int, temp_dir: Path) -> list[Path]:
+    import edge_tts
 
-    job_dir = OUTPUT_DIR / uuid.uuid4().hex
-    job_dir.mkdir(parents=True, exist_ok=True)
-    temp_dir = Path(tempfile.mkdtemp(prefix="dub-")).resolve()
+    semaphore = asyncio.Semaphore(MAX_TTS_CONCURRENCY)
+
+    async def one(index: int, text: str) -> Path:
+        path = temp_dir / f"voice-{index:05}.mp3"
+        async with semaphore:
+            await edge_tts.Communicate(text, voice, rate=f"{rate:+d}%").save(str(path))
+        return path
+
+    return await asyncio.gather(*(one(i, text) for i, text in enumerate(texts)))
+
+
+def _atempo_filter(factor: float) -> str:
+    return f"atempo={min(1.6, max(0.5, factor)):.5f}"
+
+
+def dub_audio(audio_file, target_language: str, source_language: str,
+              voice_gender: str, speech_speed: float, keep_background: bool) -> Iterator:
+    """Yield stage messages followed by dubbed audio, SRT, and translated text."""
+    outputs = (None, None, None)
+    job_dir = None
+    temp_dir = None
     try:
-        yield "**1/7 — Extracting audio…**", None, None, None, None, None
-        duration = _duration(source_path)
-        audio = temp_dir / "source.wav"
-        _run(["ffmpeg", "-y", "-i", str(source_path), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(audio)], timeout=900)
+        if not audio_file:
+            raise RuntimeError("Choose a media file and allow browser audio extraction before starting.")
+        audio_path = Path(audio_file)
+        if not audio_path.is_file():
+            raise RuntimeError("The extracted audio expired. Re-select the media and retry.")
+        if audio_path.stat().st_size > MAX_BYTES:
+            raise RuntimeError("Extracted audio is over 200 MB. Choose a smaller clip.")
+        if target_language not in LANGUAGES or source_language not in SOURCE_CODES:
+            raise RuntimeError("Select a supported source and target language.")
+        if voice_gender not in {"Female", "Male"}:
+            raise RuntimeError("Select a voice gender.")
+        rate = max(-20, min(20, int(speech_speed)))
+        duration = _duration(audio_path)
+        job_dir = OUTPUT_DIR / uuid.uuid4().hex
+        job_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix="opendub-"))
 
-        background = None
-        if keep_music:
-            yield "**2/7 — Separating vocals and background (Demucs)…** First run downloads model weights.", None, None, None, None, None
-            demucs_out = temp_dir / "separated"
-            demucs_input = temp_dir / "demucs-source.wav"
-            _run(["ffmpeg", "-y", "-i", str(source_path), "-vn", "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", str(demucs_input)], timeout=900)
-            _run([os.getenv("PYTHON", sys.executable), "-m", "demucs", "--two-stems=vocals", "-n", "htdemucs", "-o", str(demucs_out), str(demucs_input)], timeout=7200)
-            candidates = list(demucs_out.glob("**/no_vocals.wav"))
-            if not candidates:
-                raise RuntimeError("Demucs finished but its background stem was not found. Try disabling background preservation.")
-            background = candidates[0]
-
-        yield "**3/7 — Transcribing speech with word timestamps…**", None, None, None, None, None
-        raw, detected = _transcribe(audio, whisper_model, source_language)
-        segments = _sentence_segments(raw, duration)
-        if not segments:
-            raise RuntimeError("No speech was detected. Try a clearer recording or another Whisper model.")
-
+        yield "Transcribe: loading cached faster-whisper small model…", *outputs
+        raw, detected = _transcribe(audio_path, source_language)
+        rows = []
+        for start, end, text in raw:
+            start = min(start, duration)
+            end = min(max(end, start + 0.05), duration)
+            if end > start:
+                rows.append((start, end, text))
+        if not rows:
+            raise RuntimeError("No speech was detected. Try a clearer clip with audible speech.")
         source_code = NLLB_CODES.get(detected)
         if not source_code:
-            raise RuntimeError(f"Detected language '{detected}' is not supported by the included NLLB model. Select a supported source language or provide a different recording.")
-        target_code, _, _ = LANGUAGES[target_language]
-        speaker_voices = _speaker_voices(target_language, speaker_gender, speaker_count)
-        glossary = [t.strip() for t in re.split(r"[,\n]", glossary_text or "") if t.strip()]
+            raise RuntimeError(
+                f"Detected language '{detected}' is not supported by this translation model. "
+                "Choose a source language manually and retry."
+            )
 
-        yield "**4/7 — Translating segments…** The first run downloads the open translation model (~2.5 GB).", None, None, None, None, None
-        translated_rows = []
-        for start, end, original in segments:
-            translated = _translate(original, source_code, target_code, glossary)
-            translated_rows.append((start, end, original, translated or original))
+        yield "Translate: NLLB-200 distilled 600M, batches of 16…", *outputs
+        target_code = LANGUAGES[target_language][0]
+        translated = _translate_batch([row[2] for row in rows], source_code, target_code)
+        translated_rows = [
+            (start, end, text or original)
+            for (start, end, original), text in zip(rows, translated)
+        ]
+        voice = LANGUAGES[target_language][2 if voice_gender == "Female" else 3]
 
-        yield f"**5/7 — Generating target speech…** Rotating {len(speaker_voices)} available voice(s) across turns; edge-tts needs internet.", None, None, None, None, None
+        yield "Voice: generating segments in parallel (maximum 8)…", *outputs
+        voice_paths = asyncio.run(_synthesize([row[2] for row in translated_rows], voice, rate, temp_dir))
         from pydub import AudioSegment
-        from pydub.effects import normalize
 
-        speech_track = AudioSegment.silent(duration=round(duration * 1000), frame_rate=24000).set_channels(1)
-        for index, (start, end, original, translated) in enumerate(translated_rows):
-            generated = temp_dir / f"voice-{index:05}.mp3"
+        mixed = AudioSegment.silent(duration=round(duration * 1000), frame_rate=24000).set_channels(1)
+        if keep_background:
+            source_bed = AudioSegment.from_file(audio_path).set_frame_rate(24000).set_channels(1)
+            source_bed = source_bed[:len(mixed)]
+            if len(source_bed) < len(mixed):
+                source_bed += AudioSegment.silent(duration=len(mixed) - len(source_bed), frame_rate=24000)
+            mixed = source_bed.apply_gain(-18).overlay(mixed)
+
+        yield "Sync: fitting each voice clip with FFmpeg atempo (maximum 1.6x)…", *outputs
+        for (start, end, _), path in zip(translated_rows, voice_paths):
             slot_ms = max(80, round((end - start) * 1000))
-            # If speech cannot fit at 1.25x, shorten the translation and synthesize again.
-            # This keeps neighboring segments from overlapping and subtitles match the delivered audio.
-            voice = speaker_voices[index % len(speaker_voices)]
-            for attempt in range(6):
-                _edge_voice(translated, voice, int(speech_speed), generated)
-                clip = AudioSegment.from_file(generated).set_frame_rate(24000).set_channels(1)
-                if len(clip) <= slot_ms or attempt == 5:
-                    break
-                ratio = len(clip) / slot_ms
-                if ratio <= 1.25:
-                    fitted = temp_dir / f"fit-{index:05}.wav"
-                    _run(["ffmpeg", "-y", "-i", str(generated), "-filter:a", f"atempo={ratio:.5f}", "-t", f"{slot_ms/1000:.3f}", str(fitted)])
-                    clip = AudioSegment.from_file(fitted).set_frame_rate(24000).set_channels(1)[:slot_ms]
-                    break
-                words = translated.split()
-                if len(words) <= 3:
-                    fitted = temp_dir / f"fit-{index:05}.wav"
-                    _run(["ffmpeg", "-y", "-i", str(generated), "-filter:a", "atempo=1.25", "-t", f"{slot_ms/1000:.3f}", str(fitted)])
-                    clip = AudioSegment.from_file(fitted).set_frame_rate(24000).set_channels(1)[:slot_ms]
-                    break
-                translated = " ".join(words[:max(3, int(len(words) * 0.8))]).rstrip(" ,;:")
-                translated_rows[index] = (start, end, original, translated)
+            clip = AudioSegment.from_file(path)
             if len(clip) > slot_ms:
-                clip = clip[:slot_ms]
-            speech_track = speech_track.overlay(clip, position=round(start * 1000))
+                factor = min(1.6, len(clip) / slot_ms)
+                fitted = temp_dir / f"fit-{path.stem}.mp3"
+                _run([
+                    "ffmpeg", "-y", "-i", str(path), "-filter:a", _atempo_filter(factor),
+                    "-codec:a", "libmp3lame", str(fitted),
+                ], timeout=120)
+                clip = AudioSegment.from_file(fitted)
+            clip = clip.set_frame_rate(24000).set_channels(1)[:slot_ms]
+            mixed = mixed.overlay(clip, position=round(start * 1000))
 
-        yield "**6/7 — Fitting timing and mixing audio…**", None, None, None, None, None
-        if background:
-            bed = AudioSegment.from_file(background).set_frame_rate(24000).set_channels(1)
-            if len(bed) < len(speech_track):
-                bed += AudioSegment.silent(duration=len(speech_track) - len(bed), frame_rate=24000)
-            bed = bed[:len(speech_track)]
-            # Reduce peaks before overlay to leave headroom and avoid integer-sample clipping.
-            mixed = bed.apply_gain(-8).overlay(normalize(speech_track).apply_gain(-3))
-        else:
-            mixed = speech_track
-        mixed_path = temp_dir / "mixed.wav"
-        mixed.export(mixed_path, format="wav")
-        mp3_path = job_dir / f"{source_path.stem}-{target_language.lower()}-dub.mp3"
-        _run(["ffmpeg", "-y", "-i", str(mixed_path), "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-codec:a", "libmp3lame", "-q:a", "2", str(mp3_path)])
-        srt_path = job_dir / f"{source_path.stem}-{target_language.lower()}.srt"
-        vtt_path = job_dir / f"{source_path.stem}-{target_language.lower()}.vtt"
-        _write_subtitles(translated_rows, srt_path)
-        _write_subtitles(translated_rows, vtt_path, vtt=True)
+        yield "Export: writing MP3, SRT, and translated text…", *outputs
+        stem = f"dub-{target_language.lower()}"
+        mixed.export(temp_dir / "dubbed.wav", format="wav")
+        mp3_path = job_dir / f"{stem}.mp3"
+        _run(["ffmpeg", "-y", "-i", str(temp_dir / "dubbed.wav"), "-codec:a", "libmp3lame", "-q:a", "2", str(mp3_path)], timeout=300)
+        srt_path = job_dir / f"{stem}.srt"
+        _write_srt(translated_rows, srt_path)
+        text_path = job_dir / f"{stem}.txt"
+        text_path.write_text("\n\n".join(row[2] for row in translated_rows) + "\n", encoding="utf-8")
 
-        yield "**7/7 — Muxing dubbed video…**", None, None, None, None, None
-        mp4_path = job_dir / f"{source_path.stem}-{target_language.lower()}-dub.mp4"
-        if _has_video(source_path):
-            _run(["ffmpeg", "-y", "-i", str(source_path), "-i", str(mp3_path), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(mp4_path)], timeout=1800)
-        else:
-            _run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:r=25", "-i", str(mp3_path), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "192k", "-shortest", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(mp4_path)], timeout=1800)
-
-        transcript = "\n\n".join(f"{_srt_time(a)} → {_srt_time(b)}\n{src}\n→ {dst}" for a, b, src, dst in translated_rows)
-        yield f"✅ **Done.** Detected source: `{detected}` · {len(translated_rows)} segments · {duration/60:.1f} minutes", mp4_path, mp3_path, srt_path, vtt_path, transcript
+        yield f"Export: ready for local MP4 mux; {len(rows)} translated segments.", mp3_path, srt_path, text_path
     except Exception as exc:
-        message = str(exc)
-        yield f"❌ **Dubbing failed:** {message}\n\nCheck the setup guide for FFmpeg/model requirements, then retry with a shorter file.", None, None, None, None, None
+        yield f"ERROR: {exc}\n\nSelect Retry to run the job again.", *outputs
     finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def build_app():
-    with gr.Blocks(title="OpenDub — Free Video Dubbing", theme=gr.themes.Soft(primary_hue="indigo", neutral_hue="slate")) as demo:
-        gr.Markdown("# 🎙️ OpenDub\n### Free, open-source video dubbing — runs on your machine")
-        gr.Markdown("Upload media, choose one target language, and create dubbed video, MP3, SRT and VTT files. The first run downloads the selected speech and translation models. **No API keys or paid services.**")
+    with gr.Blocks(title="OpenDub — Free AI Dubbing", theme=gr.themes.Soft(primary_hue="indigo")) as demo:
+        gr.Markdown(
+            "# 🎙️ OpenDub\nFree AI dubbing for short clips. Your browser extracts and keeps the original media local; "
+            "only extracted audio is sent to this backend. The browser creates the final MP4."
+        )
+        audio = gr.File(label="Extracted mono WAV (max 200 MB, 10 minutes)", file_types=[".wav"], type="filepath")
         with gr.Row():
-            media = gr.File(label="Video or audio (up to 60 minutes)", file_types=["video", "audio"], type="filepath")
-            with gr.Column():
-                source = gr.Dropdown(["Auto-detect", "English", "Hindi", "Kannada", "Tamil", "Telugu", "Malayalam", "Marathi", "Bengali", "Gujarati", "Punjabi", "Odia", "Urdu"], value="Auto-detect", label="Source language")
-                target = gr.Dropdown(list(LANGUAGES), value="Hindi", label="Target language")
-                gender = gr.Radio(["Female", "Male"], value="Female", label="Preferred voice")
-                speakers = gr.Slider(1, 4, value=1, step=1, label="Number of speaker voices (turn rotation; no diarization)")
-        with gr.Accordion("Advanced options", open=False):
-            with gr.Row():
-                keep_music = gr.Checkbox(value=False, label="Preserve background music (requires Demucs; slow on CPU)")
-                speed = gr.Slider(-20, 20, value=0, step=5, label="Speech speed (%)")
-                model = gr.Dropdown(["tiny", "base", "small", "medium", "large-v3"], value="small", label="Whisper model (larger = better, slower)")
-            glossary = gr.Textbox(label="Keep untranslated (comma-separated names, brands, numbers)", placeholder="OpenAI, Acme, 2025")
-        create = gr.Button("✨ Create dub", variant="primary", size="lg")
-        status = gr.Markdown("Ready when you are.")
+            source = gr.Dropdown(list(SOURCE_CODES), value="Auto-detect", label="Source language")
+            target = gr.Dropdown(list(LANGUAGES), value="Hindi", label="Target language")
+            gender = gr.Radio(["Female", "Male"], value="Female", label="Voice gender")
         with gr.Row():
-            video_out = gr.Video(label="Dubbed MP4")
-            audio_out = gr.Audio(label="Dubbed MP3", type="filepath")
+            speed = gr.Slider(-20, 20, value=0, step=5, label="Voice rate (%)")
+            background = gr.Checkbox(value=False, label="Keep original background audio (lowered under dub)")
+        run = gr.Button("Create dub", variant="primary")
+        status = gr.Markdown("Ready. Browser extraction and first-time model downloads may take a little time.")
         with gr.Row():
+            audio_out = gr.File(label="Dubbed MP3")
             srt_out = gr.File(label="Subtitles (SRT)")
-            vtt_out = gr.File(label="Subtitles (VTT)")
-        transcript = gr.Textbox(label="Transcript and translation", lines=12, interactive=False)
-        create.click(dub_media, [media, target, source, gender, speakers, speed, keep_music, glossary, model], [status, video_out, audio_out, srt_out, vtt_out, transcript], concurrency_limit=1)
-        gr.Markdown("---\n**Privacy:** media is processed locally and temporary working files are deleted after each job. Completed downloads remain in `outputs/`. Translation models and Edge TTS are subject to their upstream licenses and service terms.")
+            text_out = gr.File(label="Translated text")
+        run.click(
+            dub_audio,
+            [audio, target, source, gender, speed, background],
+            [status, audio_out, srt_out, text_out],
+            concurrency_limit=1,
+            time_limit=7200,
+        )
+        gr.Markdown(
+            "Privacy note: only extracted audio is uploaded to this backend. Edge TTS sends translated text to Microsoft's service. "
+            "Temporary working files are deleted; completed output files remain in the outputs directory."
+        )
     return demo
 
 
 if __name__ == "__main__":
-    build_app().queue(default_concurrency_limit=1, max_size=8).launch(server_name=os.getenv("HOST", "0.0.0.0"), server_port=int(os.getenv("PORT", "7860")), share=False)
+    app = build_app().queue(default_concurrency_limit=1, max_size=8)
+    app.launch(
+        server_name=os.getenv("HOST", "0.0.0.0"),
+        server_port=int(os.getenv("PORT", "7860")),
+        share=os.getenv("SHARE", "false").lower() == "true",
+        show_error=True,
+    )

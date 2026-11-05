@@ -9,8 +9,8 @@ export PORT
 
 cd "$PROJECT_DIR"
 /usr/bin/time -p mkdir -p "$PROJECT_DIR/dist" "$OPENCODE_WEB_DIR"
-# Serve the checked-in studio UI from dist/. It submits jobs to the separately
-# running FastAPI backend (see README.md); do not regenerate a stale preview here.
+# Serve the checked-in browser studio from dist/. It connects to a separately
+# running Gradio backend configured in the UI; do not regenerate the preview.
 
 # Serve only the built directory (never the repository root) and publish its
 # absolute path for the preview controller.

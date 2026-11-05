@@ -8,121 +8,66 @@ app_file: app.py
 pinned: false
 ---
 
-# PlayGround
+# OpenDub — free AI video dubbing
 
-<!-- omgithub:readme:start -->
-## 🚀 Build, play, and remix with OMGithub
+OpenDub is a small, free-to-run dubbing app with two separate parts:
 
-**Created using [OMGithub.com](https://go.ondev.store/).**
+- **Gradio backend (`app.py`)** transcribes extracted audio, translates it, creates speech, and returns MP3, SRT, and TXT files.
+- **Browser studio (`dist/index.html`)** extracts audio with ffmpeg.wasm, keeps the original media on your device, then muxes the dubbed MP3 into an MP4 locally while copying the source video stream without re-encoding.
 
-[![OMGithub](https://img.shields.io/badge/OMGithub-Open%20project-orange?style=for-the-badge)](https://go.ondev.store/moonedition7-alt/PlayGround)
-[![GitHub](https://img.shields.io/badge/GitHub-Source-181717?logo=github&style=for-the-badge)](https://github.com/moonedition7-alt/PlayGround)
+The pipeline uses faster-whisper `small`, NLLB-200 distilled 600M, and Edge TTS. No paid API keys are required. Edge TTS does require internet and sends translated text to Microsoft's service. The supported target languages are Hindi, Kannada, Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati, and English.
 
-- 🎮 [Open the project](https://go.ondev.store/moonedition7-alt/PlayGround).
-- ✨ [Remix this project](https://go.ondev.store/moonedition7-alt/PlayGround?remix=1).
-- 💻 [Explore the source](https://github.com/moonedition7-alt/PlayGround).
-- 🛠️ [Check build runs](https://github.com/moonedition7-alt/PlayGround/actions).
-- 🐛 [Report an issue](https://github.com/moonedition7-alt/PlayGround/issues).
-- 👤 [Explore the creator's projects](https://go.ondev.store/moonedition7-alt).
-- 🌍 [Create with OMGithub](https://go.ondev.store/).
-<!-- omgithub:readme:end -->
+## Five-step quick start (Colab backend)
 
-# OpenDub — local video dubbing MVP
+1. **Open the notebook.** Open [`opendub_colab.ipynb`](https://colab.research.google.com/github/moonedition7-alt/PlayGround/blob/main/opendub_colab.ipynb) in Google Colab. In **Runtime → Change runtime type**, select a T4 GPU when one is available.
+2. **Launch the backend.** Run the notebook cells from top to bottom. It installs FFmpeg and the Python dependencies, configures faster-whisper for GPU float16 (CPU int8 fallback), and launches Gradio with `share=True`. The first job downloads model weights and caches them for the session.
+3. **Copy the backend URL.** Copy the public `https://....gradio.live` URL printed by the last cell. The URL is temporary and accessible to anyone who has it; do not use a shared session for private media.
+4. **Open the browser studio.** Serve `dist/` locally or host it on a static web host. For local use, clone this repository on your computer and run:
+   ```bash
+   python3 -m http.server 3000 --directory dist
+   ```
+   Then open <http://localhost:3000>. The studio loads `@gradio/client` and ffmpeg.wasm from public CDNs; no frontend build step is needed.
+5. **Connect and dub a test clip.** Paste the Gradio URL into **Gradio backend URL**, click **Test connection**, choose a clear 10–30 second clip, select languages and voice options, then click **Create dub**. Download the MP4, MP3, SRT, and translated TXT when complete.
 
-The core product currently implements **Build Step 1: a Gradio dubbing MVP**. It accepts a video/audio file, transcribes speech, translates into one selected target language, creates speech, aligns it to the original segment slots, and exports MP4, MP3, SRT, and VTT. A separate local FastAPI job API is also available as an early backend step. The stack uses free/open-source software and does not require API keys or paid APIs.
+The browser uploads only an extracted mono WAV to Gradio. The source video/audio stays in the browser and is used for local MP4 muxing. Files over 200 MB and clips longer than 10 minutes are rejected. The MP4 video stream is copied without re-encoding; audio-only inputs produce an MP4 container with dubbed audio but no video track.
 
-The full multi-user Next.js dashboard and production backend described in the original product brief are not part of this prototype. There are no user accounts, durable jobs, or daily quota enforcement. Treat the current release as a local pipeline prototype, not a hosted service.
+## Local backend
 
-## Pipeline and limitations
-
-- FFmpeg extracts audio and creates the final mux. Audio-only inputs receive a black still-video track in the MP4.
-- faster-whisper provides speech transcription and timestamps. Whisper model weights download on first use.
-- NLLB-200 distilled 600M translates each segment locally. Its model weights are several GB and need to download on first use; CPU translation can be slow.
-- Microsoft Edge TTS is free to use through the `edge-tts` client, but it requires an internet connection and relies on Microsoft's service. It is not offline or guaranteed by an SLA.
-- Demucs vocal/background separation is optional and disabled by default; enabling it downloads model weights and is slow on CPU. When enabled, the non-vocal stem is used as the music bed.
-- There is no voice cloning in this MVP. No source-speaker diarization is performed; a target voice gender is selectable.
-- Timing is fit to transcription slots. Very long translations are shortened and, as a last resort, trimmed to prevent overlap. Review the generated translation and subtitles before publishing.
-- The UI limits media to 60 minutes. Model memory and runtime requirements vary significantly; on CPU, start with a short clip and Whisper `tiny` or `base`.
-
-## Local setup (recommended)
-
-Requirements: 64-bit Linux/macOS, CPython 3.11, FFmpeg (including `ffprobe`), and enough disk for model downloads. GPU is optional.
-
-### 1. Install FFmpeg
-
-Ubuntu/Debian:
+Requirements: CPython 3.11, FFmpeg (including `ffprobe`), internet access for model downloads and Edge TTS, and several GB of disk/cache space. A GPU is recommended; CPU fallback is supported but can be slow.
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y ffmpeg
-```
+# Ubuntu/Debian
+sudo apt-get update && sudo apt-get install -y ffmpeg libsndfile1
 
-macOS with Homebrew:
-
-```bash
-brew install ffmpeg
-```
-
-Confirm both `ffmpeg` and `ffprobe` are on `PATH`:
-
-```bash
-ffmpeg -version
-ffprobe -version
-```
-
-### 2. Install and start
-
-```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-cp .env.example .env  # optional; values can also be exported in your shell
 HOST=127.0.0.1 python app.py
 ```
 
-Open <http://127.0.0.1:7860>. No `.env` file is needed for the default configuration. Binding to `127.0.0.1` keeps the Gradio app reachable only from your machine; set `HOST=0.0.0.0` only when a container or trusted network needs to reach it. On Windows, install a CPython 3.11 environment and an FFmpeg build, then activate the venv and run `$env:HOST="127.0.0.1"; python app.py` in PowerShell.
+Open <http://127.0.0.1:7860>, then use that URL as the backend URL in the studio. To make the local backend reachable from another machine, configure a trusted network or tunnel; do not expose this unauthenticated prototype publicly. To create a temporary Gradio share link, launch with `SHARE=true python app.py`.
 
-### 3. Test the pipeline
+For CUDA, install a PyTorch build compatible with your CUDA runtime. The app selects CUDA and float16 automatically when available. `WHISPER_DEVICE` and `WHISPER_COMPUTE_TYPE` can override the faster-whisper device and compute type. Models are cached by their respective libraries under the normal Hugging Face cache location.
 
-1. Start with a short (10–30 second) video or audio clip with clear speech.
-2. Upload it, leave source language on Auto-detect, choose a target, then click **Create dub**.
-3. Wait for the first-run Whisper and NLLB model downloads; these are cached for later runs.
-4. Check the MP4 and MP3, and open the SRT/VTT to verify transcript, translation, and timing.
-5. Enable “Preserve background music” on a second run only after Demucs has installed successfully; CPU separation can take a while.
+## Hugging Face Spaces
 
-Generated results are stored under `outputs/<job-id>/`. Temporary working audio is removed when a job ends. Delete `outputs/` yourself when you no longer need the results.
+This repository includes Gradio Space metadata in the README front matter, with `app.py` as the entry point. The Space installs Python dependencies from `requirements.txt` and system packages from `packages.txt` (`ffmpeg` and `libsndfile1`). A free CPU Space may not have enough memory or compute for model downloads and inference; GPU access is recommended. Once the Space is running, paste its URL into the browser studio and click **Test connection**.
 
-### Useful settings
+The app has no user accounts, authentication, durable job isolation, or quotas. A public Space or Gradio share link can be used by anyone who can reach it. Review hosting, model, dependency, and Edge TTS terms for your use case.
 
-Copy `.env.example` to `.env` as a reference and export the values before launching (the app does not load dotenv automatically):
+## Processing details and limitations
 
-```bash
-export WHISPER_DEVICE=cpu
-export WHISPER_COMPUTE_TYPE=int8
-export PORT=7860
-python app.py
-```
+- faster-whisper `small` uses beam size 1 and voice activity detection. Transcription and translation models are cached after loading.
+- NLLB-200 distilled 600M translates in batches of 16 with two beams; GPU inference uses fp16.
+- Edge TTS segment synthesis runs concurrently with a maximum of eight requests.
+- FFmpeg `atempo` fits voice segments to their subtitle timing slots, capped at 1.6×; pydub places the clips and optionally overlays lowered original audio.
+- The original audio option lowers and mixes the full source audio track, so original speech may remain audible. It is not source separation.
+- There is no voice cloning or speaker diarization. Select a synthesized voice gender in the browser.
+- Temporary work files are removed when a backend job ends. Completed MP3, SRT, and TXT files remain under `outputs/` on the backend; MP4 is assembled and downloaded by the browser.
+- Browser extraction and MP4 muxing require a modern browser and network access to the ffmpeg.wasm CDN. The initial download of the FFmpeg WebAssembly core may take a little time.
 
-For CUDA, install a PyTorch build compatible with your CUDA runtime and set `WHISPER_DEVICE=cuda` and an appropriate compute type (for example `float16`). Translation uses the Transformers/PyTorch default device and can require substantial CPU/RAM. Choose `tiny` or `base` Whisper in the UI for quicker local tests.
-
-## Local FastAPI job API (prototype)
-
-A separate FastAPI service wraps the same dubbing pipeline with an in-process, single-worker queue. It accepts multipart uploads up to 2 GB, returns a job ID, exposes status and stage-based progress milestones (`progress_percent` is approximate, not a measure of work within a stage), and provides MP4/MP3/SRT/VTT download routes. Jobs and queue state are held in memory and disappear when the process restarts; outputs remain under `outputs/`.
-
-Start it from the activated environment after installing requirements:
-
-```bash
-python api.py
-```
-
-Open <http://127.0.0.1:8000/> for the connected studio UI or <http://127.0.0.1:8000/docs> for interactive API documentation. The main routes are `POST /dub`, `GET /dub/{job_id}`, and `GET /api/jobs/{job_id}/files/{kind}` where `kind` is `video`, `audio`, `srt`, or `vtt`. The older `/api/jobs` submission/status routes remain aliases. The upload form fields use the same language, voice, glossary, speed, and Whisper choices as the Gradio app.
-
-This is still a local prototype, **not a secure public multi-user service**: it has no authentication, durable job store, daily quota enforcement, or cross-process worker. Keep the default localhost binding. Before exposing it publicly, add authentication, request/rate limits, durable queue/storage, and deployment-specific upload limits.
-
-## Docker
-
-The image includes FFmpeg and installs the Python dependencies. Model weights are not baked into the image:
+## Optional Docker backend
 
 ```bash
 docker build -t opendub .
@@ -132,39 +77,17 @@ docker run --rm -p 7860:7860 \
   opendub
 ```
 
-Then open <http://127.0.0.1:7860>. The first run downloads models into the mounted cache. Docker builds and model downloads are large.
+The image includes FFmpeg. Models are downloaded on first use and are not baked into the image.
 
-## Google Colab (ready-to-run notebook)
-
-Open [`opendub_colab.ipynb`](opendub_colab.ipynb) in Google Colab and run its cells from top to bottom. The notebook clones this repository, installs FFmpeg and Python requirements, selects CPU/GPU inference settings, and launches the Gradio app with `share=True`. Colab displays a temporary public Gradio URL after launch. Use that URL to upload a short clip and download the generated MP4, MP3, SRT, and VTT files.
-
-The first job downloads model weights; NLLB-200 is several GB. The notebook includes an optional model-preload cell, disabled by default. Free GPU availability, RAM, disk, and session duration are not guaranteed. Outputs and cached models in a free Colab runtime are temporary, so download results before disconnecting. A share URL is accessible to anyone who has it: do not upload private media or leave a session running unattended.
-
-## Hugging Face Spaces
-
-This repository includes the Gradio Space metadata in `README.md`, the Space entry point `app.py`, Python dependencies in `requirements.txt`, and system dependencies in `packages.txt` (`ffmpeg` and `libsndfile1`). To create a Space:
-
-1. On Hugging Face, create a new Space and choose the **Gradio** SDK. A free CPU tier is sufficient to launch the UI but may not have enough memory, disk, or compute for model downloads and inference.
-2. Add or upload this repository's `app.py`, `requirements.txt`, `packages.txt`, and `README.md` to the Space. Keep the rest of the Python files in the same root if using the complete repository. The README front matter selects `app.py` as the entry point.
-3. Let the Space build. It installs `requirements.txt` and the apt packages listed in `packages.txt`; the app listens on port `7860` and binds to the Space container interface.
-4. Open the Space and test first with a short clip and Whisper `tiny` or `base`. Model weights download on the first job. Enable persistent storage only if you understand its cost; free Space storage and generated files may be ephemeral.
-
-A public Space is a public service. This prototype does not provide accounts, authentication, durable job isolation, or quotas. Do not use it for sensitive media. The separate FastAPI service is intended for local use and should not be exposed publicly without adding appropriate access controls.
-
-This project does not create or manage a hosting account. Check current provider limits and relevant hosting, model, dependency, and Edge TTS terms before deploying. Free hardware and session availability are not guaranteed.
-
-## Structure
+## Project files
 
 ```text
-.
-├── app.py              # Gradio UI and end-to-end dubbing pipeline
-├── api.py              # Local FastAPI job API
-├── requirements.txt
-├── Dockerfile
-├── .env.example
-└── outputs/            # Created automatically; completed downloads
+app.py                 Gradio audio-only inference backend
+dist/index.html        Browser studio and local media processing
+requirements.txt       Python backend dependencies
+packages.txt           Hugging Face Spaces system dependencies
+opendub_colab.ipynb    Colab launcher (Gradio share link)
+Dockerfile             Optional backend container
 ```
 
-## License and service notes
-
-This project is a prototype. Check the licenses of the chosen models, dependencies, and the Edge TTS service for your use case. Media processing is local except Edge TTS speech generation. The app does not upload media to a third-party API by itself, but text supplied to Edge TTS is sent to Microsoft's service.
+This is a prototype, not a hosted commercial service. Free GPUs and session availability are not guaranteed. Check the licenses and terms of all models and services before use.
